@@ -1,1 +1,4 @@
 dataset/
+*.png
+*.pkl
+*.pt
