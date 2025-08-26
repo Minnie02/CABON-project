@@ -1,3 +1,0 @@
-YoudenJ_best_threshold = 0.2810, J = 0.8732
-F1_best_threshold     = 0.1300, F1 = 0.9583
-USED_threshold        = 0.2810
