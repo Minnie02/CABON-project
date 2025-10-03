@@ -1,17 +1,21 @@
-Description
+# Alzheimer EEG — Streamlit App
 
-A total of 44 healthy elderly and MCI and AD patients participated in this experiment. The data of 6 participants were removed from further processing due to issues with EEG data recording, history of stroke, or traumatic brain injuries. Also, participants with any history of olfactory dysfunction were excluded from the study. The remaining 35 participants (age = 70.97±8.58, female = 57.14%) included 15 healthy (normal) individuals (age = 69.27±6.65, female = 53.33%), 7 MCI patients (age = 66.57±6.85, female = 51.14%), and 13 AD patients (age = 75.31±9.90, female = 61.54%).
-An olfactory oddball perception task was performed on the participants. During this task, each participant was presented with a random sequence of two different odors. The sequence of odors was the same for all participants. One odor (lemon) was presented frequently (standard) with a probability of 0.75 and the other odor (rose) was presented non-frequently (deviant) with a probability of 0.25.
+**EEG(.mat) 업로드 → 서버 전처리 → PyTorch 모델 추론 → 확률 시각화**를 한 파일로 구성한 Streamlit UI입니다.
 
-The dataset consists of four files as follows: 
-1)	“AD.mat”: Contains data for Alzheimer’s disease patients.
-2)	“Normal.mat”: Contains data for healthy elderly participants. 
-3)	“MCI.mat”: Contains data for amnestic mild cognitive impairment patients. 
-4)	“MMSE_Data”: Contains demographic and MMSE data of all participants.
+## 빠른 시작 (로컬)
+```bash
+pip install -r requirements.txt
+streamlit run app.py
+```
+- 기본적으로 `artifacts/`에 있는 `model.pt`(TorchScript) 또는 `model_state.pth`(state_dict)를 로드합니다.
+- 학습 시의 전처리 파라미터/클래스 순서를 `app.py` 상단 설정에서 반드시 동일하게 맞추세요.
 
-The structure of the first three files is the same as described below. These files are organized as structure arrays for use in MATLAB coding. However, the data can also be used with other programming languages like python (using the scipy package).
+## 배포 (Streamlit Community Cloud)
+1. 이 프로젝트를 GitHub에 푸시
+2. https://share.streamlit.io 에서 새 앱 생성 (repo/branch/app.py 선택)
+3. `artifacts/` 안의 모델 파일이 리포지토리에 포함되어 있어야 합니다. (용량 제한 참고)
+4. 필요 시 `secrets`에 환경변수/URL 등을 등록할 수 있습니다.
 
-The fourth file includes demographic data of each participant as age in a range, their diagnosed mental state, and the details of their MMSE score. The columns indicate abbreviated MMSE test components as follows: O Place: Orientation to Place, O Time: Orientation to time, Reg: Registration, Att & Calc: Attention and Calculation, Rep: Repetition, DR: Delayed Recall, VS: Visuospatial, Comm: Commands.
-
-DATA
-URL : https://data.mendeley.com/datasets/sgzbgwjfkr/5
+## 주의
+- 연구/교육용 데모이며, 의료적 판단에 사용하면 안 됩니다.
+- 업로드 데이터에 개인식별정보가 포함되지 않도록 유의하세요.
