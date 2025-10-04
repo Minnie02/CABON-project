@@ -1,4 +1,5 @@
 import streamlit as st
+st.set_option("server.maxUploadSize", 2000)
 import pandas as pd
 import numpy as np
 import torch
@@ -143,3 +144,4 @@ if st.button("🔍 Run Inference"):
         st.write(f"앙상블 최종 확률(AD): **{p_final:.4f}**")
         st.progress(min(max(p_final,0.0),1.0))
         st.markdown(f"<h2 style='color:{color}'>{risk}</h2>", unsafe_allow_html=True)
+
