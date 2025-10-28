@@ -1,53 +1,21 @@
 import streamlit as st
-st.set_option("server.maxUploadSize", 2000)
-import pandas as pd
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import joblib
 from scipy.io import loadmat
 import tempfile
 
-DEVICE = torch.device("cpu")
-
 # ---------------------------
-# Omics: 모델/전처리 로드
+# Omics: 외부 코드 불러오기
 # ---------------------------
-from omics_model import MLP
-
-@st.cache_resource
-def load_omics_assets():
-    scaler = joblib.load("scaler.pkl")
-    pca    = joblib.load("pca.pkl")
-    ckpt   = torch.load("omics_mlp.pt", map_location="cpu")
-
-    model = MLP(in_dim=ckpt["in_dim"], hidden=ckpt["hidden"], dropout=ckpt["dropout"])
-    model.load_state_dict(ckpt["state_dict"])
-    model.eval()
-    temp = ckpt.get("temperature", 1.0)
-    return scaler, pca, model, float(max(temp, 1e-3))
-
-def predict_omics_from_soft(file) -> float:
-    # SOFT 파일은 보통 주석라인 "!" 포함 → 무시하고 탭구분자로 읽음
-    df = pd.read_csv(file, sep="\t", comment="!", index_col=0)
-    scaler, pca, model, temp = load_omics_assets()
-
-    raw = df.values.astype(float)
-    raw = np.nan_to_num(raw, nan=0.0, posinf=0.0, neginf=0.0)
-
-    X_scaled = scaler.transform(raw)
-    X_pca    = pca.transform(X_scaled)
-    X        = torch.tensor(X_pca, dtype=torch.float32)
-
-    logits = model(X) / temp
-    probs  = torch.sigmoid(logits).numpy()
-    return float(np.mean(probs))
-
+from omics_model import predict_omics   # ← 그대로 불러와 사용
 
 # ---------------------------
 # EEG: CNN 정의 + 모델 로드
 # ---------------------------
+DEVICE = torch.device("cpu")
+
 class EEG_CNN(nn.Module):
     def __init__(self, num_classes=3):
         super().__init__()
@@ -104,7 +72,6 @@ def predict_eeg_from_mat(file) -> float:
     probs  = torch.softmax(logits, dim=1).cpu().numpy()
     return float(np.mean(probs[:,0]))  # 클래스0=AD 확률 평균
 
-
 # ---------------------------
 # 앙상블 + UI
 # ---------------------------
@@ -123,14 +90,13 @@ if st.button("🔍 Run Inference"):
     if not omics_file or not eeg_file:
         st.warning("두 파일을 모두 업로드하세요.")
     else:
-        # 임시파일로 저장 후 처리
         with tempfile.NamedTemporaryFile(delete=False, suffix=".soft") as tmp1:
             tmp1.write(omics_file.read()); omics_path = tmp1.name
         with tempfile.NamedTemporaryFile(delete=False, suffix=".mat") as tmp2:
             tmp2.write(eeg_file.read()); eeg_path = tmp2.name
 
         # 예측
-        p_omics = predict_omics_from_soft(omics_path)
+        p_omics = predict_omics(omics_path)   # ← omics_model.py 사용
         p_eeg   = predict_eeg_from_mat(eeg_path)
         p_final = 0.499 * p_eeg + 0.501 * p_omics
 
@@ -144,4 +110,5 @@ if st.button("🔍 Run Inference"):
         st.write(f"앙상블 최종 확률(AD): **{p_final:.4f}**")
         st.progress(min(max(p_final,0.0),1.0))
         st.markdown(f"<h2 style='color:{color}'>{risk}</h2>", unsafe_allow_html=True)
+
 
