@@ -1,21 +1,49 @@
-import streamlit as st
+import gradio as gr
+import pandas as pd
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import joblib
 from scipy.io import loadmat
-import tempfile
+
+DEVICE = torch.device("cpu")
 
 # ---------------------------
-# Omics: 외부 코드 불러오기
+# Omics: 모델/전처리 로드
 # ---------------------------
-from omics_model import predict_omics   # ← 그대로 불러와 사용
+from omics_model import MLP
+
+def load_omics_assets():
+    scaler = joblib.load("scaler.pkl")
+    pca    = joblib.load("pca.pkl")
+    ckpt   = torch.load("omics_mlp.pt", map_location="cpu")
+
+    model = MLP(in_dim=ckpt["in_dim"], hidden=ckpt["hidden"], dropout=ckpt["dropout"])
+    model.load_state_dict(ckpt["state_dict"])
+    model.eval()
+    temp = ckpt.get("temperature", 1.0)
+    return scaler, pca, model, float(max(temp, 1e-3))
+
+def predict_omics_from_soft(file) -> float:
+    df = pd.read_csv(file.name, sep="\t", comment="!", index_col=0)
+    scaler, pca, model, temp = load_omics_assets()
+
+    raw = df.values.astype(float)
+    raw = np.nan_to_num(raw, nan=0.0, posinf=0.0, neginf=0.0)
+
+    X_scaled = scaler.transform(raw)
+    X_pca    = pca.transform(X_scaled)
+    X        = torch.tensor(X_pca, dtype=torch.float32)
+
+    logits = model(X) / temp
+    probs  = torch.sigmoid(logits).numpy()
+    return float(np.mean(probs))
+
 
 # ---------------------------
 # EEG: CNN 정의 + 모델 로드
 # ---------------------------
-DEVICE = torch.device("cpu")
-
 class EEG_CNN(nn.Module):
     def __init__(self, num_classes=3):
         super().__init__()
@@ -32,7 +60,6 @@ class EEG_CNN(nn.Module):
         x = x.view(x.size(0), -1)
         return self.fc(x)
 
-@st.cache_resource
 def load_eeg_model():
     model = EEG_CNN().to(DEVICE)
     state = torch.load("best_model.pt", map_location=DEVICE)
@@ -44,26 +71,24 @@ def load_eeg_model():
     return model
 
 def preprocess_eeg_mat(file, window=512, stride=256):
-    mat = loadmat(file)
+    mat = loadmat(file.name)
     eeg = mat.get("export")
     if eeg is None:
         raise ValueError("❌ 'export' 키가 없습니다.")
 
-    # (time, channel) → (channel, time)
-    if eeg.shape[1] == 19:
-        eeg = eeg.T   # (19, T)
+    if eeg.shape[1] == 19:  # (T,19) → (19,T)
+        eeg = eeg.T
 
     ch, t = eeg.shape
     epochs = []
     for start in range(0, t-window+1, stride):
         epochs.append(eeg[:, start:start+window])
-    return np.stack(epochs)  # (N,19,512)
+    return np.stack(epochs)
 
 def predict_eeg_from_mat(file) -> float:
     model = load_eeg_model()
     arr = preprocess_eeg_mat(file)
 
-    # Normalize
     arr = (arr - arr.mean(axis=(1,2), keepdims=True)) / (arr.std(axis=(1,2), keepdims=True) + 1e-6)
     arr = np.nan_to_num(arr)
 
@@ -72,43 +97,57 @@ def predict_eeg_from_mat(file) -> float:
     probs  = torch.softmax(logits, dim=1).cpu().numpy()
     return float(np.mean(probs[:,0]))  # 클래스0=AD 확률 평균
 
+
 # ---------------------------
-# 앙상블 + UI
+# 앙상블 + 위험도
 # ---------------------------
 def risk_bucket(p):
     if p < 0.3: return "Low Risk","green"
     elif p < 0.7: return "Medium Risk","orange"
     return "High Risk","red"
 
-st.title("🧠 Alzheimer’s Diagnosis System (EEG + Omics Ensemble)")
-st.caption("EEG(.mat) + Omics(.soft) → 앙상블 (EEG=0.499, Omics=0.501)")
+def run_inference(omics_file, eeg_file):
+    if omics_file is None or eeg_file is None:
+        return "파일을 모두 업로드하세요.", None, None, None, None
 
-omics_file = st.file_uploader("Upload Omics Data (.soft)", type=["soft"])
-eeg_file   = st.file_uploader("Upload EEG Data (.mat)", type=["mat"])
+    p_omics = predict_omics_from_soft(omics_file)
+    p_eeg   = predict_eeg_from_mat(eeg_file)
+    p_final = 0.499 * p_eeg + 0.501 * p_omics
 
-if st.button("🔍 Run Inference"):
-    if not omics_file or not eeg_file:
-        st.warning("두 파일을 모두 업로드하세요.")
-    else:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".soft") as tmp1:
-            tmp1.write(omics_file.read()); omics_path = tmp1.name
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".mat") as tmp2:
-            tmp2.write(eeg_file.read()); eeg_path = tmp2.name
+    risk,color = risk_bucket(p_final)
 
-        # 예측
-        p_omics = predict_omics(omics_path)   # ← omics_model.py 사용
-        p_eeg   = predict_eeg_from_mat(eeg_path)
-        p_final = 0.499 * p_eeg + 0.501 * p_omics
-
-        # 위험도
-        risk,color = risk_bucket(p_final)
-
-        # 결과 출력
-        st.subheader("📊 결과")
-        st.write(f"EEG 모델 확률(AD): **{p_eeg:.4f}**")
-        st.write(f"Omics 모델 확률(AD): **{p_omics:.4f}**")
-        st.write(f"앙상블 최종 확률(AD): **{p_final:.4f}**")
-        st.progress(min(max(p_final,0.0),1.0))
-        st.markdown(f"<h2 style='color:{color}'>{risk}</h2>", unsafe_allow_html=True)
+    return (
+        f"EEG 확률(AD): {p_eeg:.4f}",
+        f"Omics 확률(AD): {p_omics:.4f}",
+        f"앙상블 최종 확률(AD): {p_final:.4f}",
+        risk,
+        color
+    )
 
 
+# ---------------------------
+# Gradio UI
+# ---------------------------
+with gr.Blocks() as demo:
+    gr.Markdown("## 🧠 Alzheimer’s Diagnosis System (EEG + Omics Ensemble)")
+
+    with gr.Row():
+        omics_file = gr.File(label="Upload Omics Data (.soft)", type="file")
+        eeg_file   = gr.File(label="Upload EEG Data (.mat)", type="file")
+
+    run_btn = gr.Button("🔍 Run Inference")
+
+    eeg_out   = gr.Textbox(label="EEG 모델 결과")
+    omics_out = gr.Textbox(label="Omics 모델 결과")
+    final_out = gr.Textbox(label="앙상블 최종 결과")
+    risk_out  = gr.Textbox(label="위험도 등급")
+    color_out = gr.Textbox(label="색상 코드")
+
+    run_btn.click(
+        fn=run_inference,
+        inputs=[omics_file, eeg_file],
+        outputs=[eeg_out, omics_out, final_out, risk_out, color_out]
+    )
+
+if __name__ == "__main__":
+    demo.launch()
