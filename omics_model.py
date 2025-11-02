@@ -1,77 +1,90 @@
-#정환이형이 보내준거에서 수정된 상태
-# omics_model.py
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torch.optim as optim
 import numpy as np
 import joblib
+from sklearn.decomposition import PCA
+from sklearn.preprocessing import StandardScaler
+import pandas as pd
 
+# ---------------------------
+# MLP 모델 정의
+# ---------------------------
 class MLP(nn.Module):
-    def __init__(self, in_dim: int, hidden: int = 256, dropout: float = 0.2):
-        super().__init__()
+    def __init__(self, in_dim, hidden=128, dropout=0.3):
+        super(MLP, self).__init__()
         self.fc1 = nn.Linear(in_dim, hidden)
         self.fc2 = nn.Linear(hidden, hidden)
-        self.out = nn.Linear(hidden, 1)   # 이진 분류 (AD vs Control)
-        self.drop = nn.Dropout(dropout)
+        self.dropout = nn.Dropout(dropout)
+        self.fc3 = nn.Linear(hidden, 1)
 
     def forward(self, x):
         x = F.relu(self.fc1(x))
-        x = self.drop(x)
-        x = F.relu(self.fc2(x))
-        x = self.drop(x)
-        return self.out(x).squeeze(-1)  # 로짓 출력
+        x = self.dropout(F.relu(self.fc2(x)))
+        return self.fc3(x)
 
 
-def predict_omics(raw_data: np.ndarray, model, scaler, pca, T=1.0):
-    """
-    raw_data : (n_samples, n_features) numpy array (비전처리 원본)
-    return   : 확률 (AD 위험도)
-    """
-    # 1) NaN/Inf 처리
-    raw_data = np.nan_to_num(raw_data, nan=0.0, posinf=0.0, neginf=0.0)
+# ---------------------------
+# Omics 학습 + 저장 함수
+# ---------------------------
+def train_and_save_model(data_path, save_model="omics_mlp.pt", save_scaler="scaler.pkl", save_pca="pca.pkl"):
+    # 1. 데이터 불러오기 (.soft 파일 예시)
+    df = pd.read_csv(data_path, sep="\t", comment="!", index_col=0)
 
-    # 2) Scaling
-    X_scaled = scaler.transform(raw_data)
+    # 라벨이 별도로 필요하다면 불러오기 (예: AD=1, Control=0)
+    # 여기서는 예시로 임의로 만든다고 가정
+    y = np.random.randint(0, 2, size=df.shape[1])  # 샘플 라벨
+    X = df.values.T  # (samples, genes)
 
-    # 3) PCA
-    X_proc = pca.transform(X_scaled)
+    # 2. 전처리
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(X)
 
-    # 4) Tensor 변환
-    X_tensor = torch.tensor(X_proc, dtype=torch.float32)
+    pca = PCA(n_components=50)  # PCA 차원 수
+    X_pca = pca.fit_transform(X_scaled)
 
-    # 5) 모델 추론 + 온도 보정
-    with torch.no_grad():
-        logits = model(X_tensor)
-        logits = logits / max(T, 1e-3)   # Temperature scaling
-        probs = torch.sigmoid(logits).numpy()
+    # Tensor 변환
+    X_tensor = torch.tensor(X_pca, dtype=torch.float32)
+    y_tensor = torch.tensor(y, dtype=torch.float32).unsqueeze(1)
 
-    return probs
-
-
-# ---------------------------------------------------
-# ✅ 수정: 독립 실행 모드에서만 동작하도록 분리
-# ---------------------------------------------------
-if __name__ == "__main__":   # ✅ 추가
-    # 전처리기 불러오기
-    scaler = joblib.load("scaler.pkl")
-    pca    = joblib.load("pca.pkl")
-
-    # 모델 불러오기
-    checkpoint = torch.load("omics_mlp.pt", map_location="cpu")
-    in_dim  = checkpoint["in_dim"]
-    hidden  = checkpoint["hidden"]
-    dropout = checkpoint["dropout"]
-    T       = checkpoint.get("temperature", 1.0)
-
+    # 3. 모델 정의
+    in_dim = X_pca.shape[1]   # PCA 출력 차원 (50)
+    hidden = 128
+    dropout = 0.3
     model = MLP(in_dim=in_dim, hidden=hidden, dropout=dropout)
-    model.load_state_dict(checkpoint["state_dict"])
-    model.eval()
 
-    print("✅ omics_model standalone test OK")
+    # 4. 학습 설정
+    optimizer = optim.Adam(model.parameters(), lr=1e-3)
+    criterion = nn.BCEWithLogitsLoss()
 
-    # ✅ 테스트용 코드 (임시 더미 데이터)
-    dummy_data = np.random.rand(1, in_dim)   # 1개 샘플
-    result = predict_omics(dummy_data, model, scaler, pca, T)
-    print("예측 확률:", result)
+    # 5. 학습 루프 (간단히 5 epochs만)
+    model.train()
+    for epoch in range(5):
+        optimizer.zero_grad()
+        output = model(X_tensor)
+        loss = criterion(output, y_tensor)
+        loss.backward()
+        optimizer.step()
+        print(f"Epoch {epoch+1}: Loss={loss.item():.4f}")
 
-     
+    # 6. 모델 저장 (메타데이터 포함)
+    checkpoint = {
+        "in_dim": in_dim,
+        "hidden": hidden,
+        "dropout": dropout,
+        "temperature": 1.0,
+        "state_dict": model.state_dict()
+    }
+    torch.save(checkpoint, save_model)
+    print(f"✅ 모델 저장 완료: {save_model}")
+
+    # 7. Scaler & PCA 저장
+    joblib.dump(scaler, save_scaler)
+    joblib.dump(pca, save_pca)
+    print(f"✅ Scaler 저장: {save_scaler}, PCA 저장: {save_pca}")
+
+
+if __name__ == "__main__":
+    # 예시 실행
+    train_and_save_model("GSE33770_family.soft.gz")
